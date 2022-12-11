@@ -1,10 +1,10 @@
-package fairqueuing
+package container
 
 import (
 	"container/list"
 	"net/http"
 
-	"github.com/tkashem/apf/pkg/core"
+	"github.com/tkashem/apf/pkg/fairqueuing"
 )
 
 // the FIFO list implementation is not safe for concurrent use
@@ -13,7 +13,7 @@ type requestFIFO struct {
 	*list.List
 }
 
-func newRequestFIFO() core.FIFO {
+func NewFIFO() *requestFIFO {
 	return &requestFIFO{
 		List: list.New(),
 	}
@@ -23,7 +23,7 @@ func (l *requestFIFO) Length() int {
 	return l.Len()
 }
 
-func (l *requestFIFO) Enqueue(r *http.Request) core.DisposerFunc {
+func (l *requestFIFO) Enqueue(r *http.Request) fairqueuing.DisposerFunc {
 	e := l.PushBack(r)
 
 	return func() {
@@ -43,7 +43,7 @@ func (l *requestFIFO) Peek() (*http.Request, bool) {
 	return l.getFirst(false)
 }
 
-func (l *requestFIFO) Walk(f core.WalkFunc) {
+func (l *requestFIFO) Walk(f fairqueuing.WalkFunc) {
 	var next *list.Element
 	for current := l.Front(); current != nil; current = next {
 		next = current.Next() // f is allowed to remove current

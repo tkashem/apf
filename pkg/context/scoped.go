@@ -1,11 +1,14 @@
-package core
+package context
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"k8s.io/utils/clock"
+	"github.com/tkashem/apf/pkg/fairqueuing/estimator"
+	"github.com/tkashem/apf/pkg/fairqueuing/flow"
+	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
+	"github.com/tkashem/apf/pkg/scheduler"
 )
 
 type RequestScopedContextKeyType int
@@ -28,36 +31,19 @@ func WithRequestScopedContext(parent context.Context, scoped *RequestScoped) con
 }
 
 type RequestScoped struct {
-	Served   bool
-	Decision DecisionSetter
-	Estimate *WorkEstimate
+	Served             bool
+	UserHandlerLatency LatencyTracker
+	TotalLatency       LatencyTracker
 
-	UserHandlerLatency        LatencyTracker
-	TotalLatency              LatencyTracker
+	Flow                      flow.RequestFlow
+	Decision                  scheduler.DecisionSetter
 	QueueWaitLatency          LatencyTracker
 	PostDecisionExecutionWait LatencyTracker
+	Estimate                  estimator.CostEstimate
+	RTracker                  virtual.RTracker
 }
 
 type LatencyTracker interface {
-	TookSince(clock clock.PassiveClock)
+	Done()
 	Get() (startedAt time.Time, duration time.Duration)
-}
-
-type latencyTracker struct {
-	startedAt time.Time
-	duration  time.Duration
-}
-
-func (t latencyTracker) TookSince(clock clock.PassiveClock) {
-	t.duration = clock.Since(t.startedAt)
-}
-
-func (t latencyTracker) Get() (time.Time, time.Duration) {
-	return t.startedAt, t.duration
-}
-
-func NewLatencyTracker(clock clock.PassiveClock) LatencyTracker {
-	return latencyTracker{
-		startedAt: clock.Now(),
-	}
 }

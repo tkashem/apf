@@ -1,18 +1,19 @@
-package scheduler
+package nowait
 
 import (
 	"fmt"
 	"net/http"
 	"sync"
 
-	"github.com/tkashem/apf/pkg/core"
+	apfcontext "github.com/tkashem/apf/pkg/context"
+	"github.com/tkashem/apf/pkg/scheduler"
 )
 
-func NewNoWaitSchedulerFactory(seats int32, events core.SchedulingEvents) (*core.SimpleSchedulerFactory, error) {
+func NewNoWaitSchedulerFactory(seats uint32, events scheduler.Events) (*scheduler.SimpleSchedulerFactory, error) {
 	if seats < 1 {
 		return nil, fmt.Errorf("seats must be positive")
 	}
-	return &core.SimpleSchedulerFactory{
+	return &scheduler.SimpleSchedulerFactory{
 		Scheduler: &noWaitScheduler{
 			totalSeats: seats,
 			events:     events,
@@ -22,30 +23,30 @@ func NewNoWaitSchedulerFactory(seats int32, events core.SchedulingEvents) (*core
 
 type noWaitScheduler struct {
 	lock                    sync.Mutex
-	totalSeats              int32
-	seatsInUse              int32
-	currentRequestsInFlight int32
-	events                  core.SchedulingEvents
+	totalSeats              uint32
+	seatsInUse              uint32
+	currentRequestsInFlight uint32
+	events                  scheduler.Events
 }
 
-func (s *noWaitScheduler) Schedule(r *http.Request) (core.Finisher, error) {
-	scoped, err := core.RequestScopedFrom(r.Context())
+func (s *noWaitScheduler) Schedule(r *http.Request) (scheduler.Finisher, error) {
+	scoped, err := apfcontext.RequestScopedFrom(r.Context())
 	if err != nil {
 		return nil, err
 	}
-	seatsRequested := scoped.Estimate.Seats
+	seatsRequested := scoped.Estimate.GetSeats()
 
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	if seatsRequested+s.seatsInUse > s.totalSeats {
-		return rejectedRequest{}, nil
+		return scheduler.RejectedRequest{}, nil
 	}
 	s.seatsInUse += seatsRequested
 	s.currentRequestsInFlight += 1
 
 	return immediateRequest{
-		disposer: core.DisposerFunc(func() {
+		disposerFn: func() {
 			defer s.events.Disposed(r)
 			func() {
 				s.lock.Lock()
@@ -53,6 +54,6 @@ func (s *noWaitScheduler) Schedule(r *http.Request) (core.Finisher, error) {
 				s.seatsInUse -= seatsRequested
 				s.currentRequestsInFlight -= 1
 			}()
-		}),
+		},
 	}, nil
 }

@@ -1,8 +1,9 @@
-package core
+package fairqueuing
 
 import (
-	"math"
 	"net/http"
+
+	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
 )
 
 // walkFunc is called for each request in the list in the
@@ -40,52 +41,52 @@ type FIFO interface {
 	Walk(WalkFunc)
 }
 
-type SeatSeconds uint64
-
-// MaxSeatsSeconds is the maximum representable value of SeatSeconds
-const MaxSeatSeconds = SeatSeconds(math.MaxUint64)
-
-// MinSeatSeconds is the lowest representable value of SeatSeconds
-const MinSeatSeconds = SeatSeconds(0)
-
-type FairQueue interface {
-	Enqueue(*http.Request) (DisposerFunc, error)
-	DequeueForExecution(dequeued, decided func()) (*http.Request, bool)
-	GetVirtualFinish() SeatSeconds
-	Peek() (*http.Request, bool)
-	Length() int
+type SeatCount struct {
+	InUse   uint32
+	Waiting uint32
 }
 
-// used by the shuffle sharding logic to pick a queue
-type FairQueueAccessor interface {
-	Total() int
-	Get(int) FairQueue
+func (sc SeatCount) Total() uint32 {
+	return sc.InUse + sc.Waiting
 }
 
-type QueueAssigner interface {
-	Assign(accessor FairQueueAccessor) FairQueue
+type RequestCount struct {
+	Executing uint32
+	Waiting   uint32
 }
 
-type SchedulingEvents interface {
-	Arrived(*http.Request)
-	QueueAssigned(*http.Request)
-	Enqueued(*http.Request)
-	Dequeued(*http.Request)
-	DecisionChanged(*http.Request, DecisionType)
-
-	ExecutionStarting(*http.Request)
-	ExecutionEnded(*http.Request)
-	Disposed(*http.Request)
-	Timeout(*http.Request)
+func (rc RequestCount) Total() uint32 {
+	return rc.Executing + rc.Waiting
 }
 
-type PostDequeueCallbacks struct {
+type Disposer interface {
+	Dispose()
+}
+
+type DisposerFunc func()
+
+func (d DisposerFunc) Dispose() {
+	d()
+}
+
+type QueueCleanupCallbacks struct {
 	PostExecution Disposer
 	PostTimeout   Disposer
 }
 
+type FairQueue interface {
+	Enqueue(*http.Request) (QueueCleanupCallbacks, error)
+	DequeueForExecution(dequeued, decided func(*http.Request)) (*http.Request, bool)
+
+	GetNextFinishR() virtual.SeatSeconds
+
+	Peek() (*http.Request, bool)
+	Length() int
+	GetWork() SeatCount
+}
+
 type FairQueueSet interface {
 	Name() string
-	Enqueue(*http.Request, QueueAssigner) (PostDequeueCallbacks, error)
+	Enqueue(*http.Request) (QueueCleanupCallbacks, error)
 	Dispatch() (bool, error)
 }

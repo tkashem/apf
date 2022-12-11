@@ -1,4 +1,4 @@
-package core
+package scheduler
 
 import (
 	"net/http"
@@ -10,20 +10,6 @@ type SchedulerFactory interface {
 
 type Scheduler interface {
 	Schedule(*http.Request) (Finisher, error)
-}
-
-type Finisher interface {
-	Finish(func())
-}
-
-type Disposer interface {
-	Dispose()
-}
-
-type DisposerFunc func()
-
-func (d DisposerFunc) Dispose() {
-	d()
 }
 
 type SimpleSchedulerFactory struct {

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/tkashem/apf/pkg/factory"
+	"github.com/tkashem/apf/factory"
 )
 
 func TestNoWaitScheduler(t *testing.T) {
@@ -29,6 +29,10 @@ func TestNoWaitScheduler(t *testing.T) {
 	handler, err := factory.NewBuilder().
 		WithRequestHandler(requestHandler).
 		WithServerConcurrency(1).
+		WithSchedulingEvents(events{t: t}).
+		WithFlowDistinguisher(func(r *http.Request) []string {
+			return []string{r.URL.Path}
+		}).
 		Build()
 	if err != nil {
 		t.Fatalf("failed to build apf handler: %v", err)

@@ -3,7 +3,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/tkashem/apf/pkg/core"
+	apfcontext "github.com/tkashem/apf/pkg/context"
 	"k8s.io/utils/clock"
 )
 
@@ -22,14 +22,14 @@ type tracker struct {
 
 func (t *tracker) Build() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scoped, err := core.RequestScopedFrom(r.Context())
+		scoped, err := apfcontext.RequestScopedFrom(r.Context())
 		if err != nil {
 			t.handler.ServeHTTP(w, r)
 			return
 		}
 
-		scoped.UserHandlerLatency = core.NewLatencyTracker(t.clock)
-		defer scoped.UserHandlerLatency.TookSince(t.clock)
+		scoped.UserHandlerLatency = apfcontext.NewLatencyTracker(t.clock)
+		defer scoped.UserHandlerLatency.Done()
 		t.handler.ServeHTTP(w, r)
 	})
 }

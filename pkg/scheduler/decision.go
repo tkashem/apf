@@ -1,4 +1,4 @@
-package core
+package scheduler
 
 // A decision about a request
 type DecisionType int
@@ -15,9 +15,9 @@ const (
 )
 
 type DecisionSetter interface {
-	Set(DecisionType) bool
+	SetDecision(DecisionType) bool
 }
 
-type DecisionGetter interface {
-	Get() DecisionType
+type DecisionWaiter interface {
+	WaitForDecision() DecisionType
 }

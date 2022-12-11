@@ -4,57 +4,58 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tkashem/apf/pkg/core"
+	apfcontext "github.com/tkashem/apf/pkg/context"
+	"github.com/tkashem/apf/pkg/fairqueuing/estimator"
+	"github.com/tkashem/apf/pkg/fairqueuing/flow"
+	"github.com/tkashem/apf/pkg/scheduler"
 	"k8s.io/utils/clock"
 )
 
-func NewExecutor(handler http.Handler, errorHandler core.ErrorHandler, estimator core.WorkEstimator,
-	factory core.SchedulerFactory, events core.SchedulingEvents) http.Handler {
+func NewExecutor(handler http.Handler, errorHandler ErrorHandler, estimator estimator.CostEstimator,
+	factory scheduler.SchedulerFactory, events scheduler.Events,
+	distinguisherFn flow.FlowDistinguisherFunc) http.Handler {
 	executor := &executor{
-		clock:        clock.RealClock{},
-		estimator:    estimator,
-		factory:      factory,
-		errorHandler: errorHandler,
-		handler:      handler,
-		events:       events,
+		clock:           clock.RealClock{},
+		estimator:       estimator,
+		factory:         factory,
+		errorHandler:    errorHandler,
+		handler:         handler,
+		events:          events,
+		flow:            flow.ComputeFlow,
+		distinguisherFn: distinguisherFn,
 	}
-	return executor.Build()
+	return executor.NewExecutorHandler()
 }
 
 type executor struct {
-	clock        clock.Clock
-	estimator    core.WorkEstimator
-	factory      core.SchedulerFactory
-	errorHandler core.ErrorHandler
-	events       core.SchedulingEvents
+	clock           clock.Clock
+	estimator       estimator.CostEstimator
+	distinguisherFn flow.FlowDistinguisherFunc
+	flow            flow.FlowComputerFunc
+	factory         scheduler.SchedulerFactory
+	errorHandler    ErrorHandler
+	events          scheduler.Events
 	// request handler
 	handler http.Handler
 }
 
-func (e *executor) Build() http.Handler {
+func (e *executor) NewExecutorHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scoped, err := core.RequestScopedFrom(r.Context())
+		scoped, err := apfcontext.RequestScopedFrom(r.Context())
 		if err != nil {
 			// we should never be here
 			e.errorHandler.HandleError(w, r, err)
 			return
 		}
 
-		var estimate *core.WorkEstimate
-		if e.estimator != nil {
-			est, err := e.estimator.Estimate(r)
-			if err != nil {
-				e.errorHandler.HandleError(w, r, fmt.Errorf("error estimating request cost"))
-				return
-			}
-			estimate = &est
+		scoped.Flow = e.flow.ComputeFlow(r, e.distinguisherFn)
+
+		vr, err := e.estimator.EstimateCost(r)
+		if err != nil {
+			e.errorHandler.HandleError(w, r, fmt.Errorf("error estimating request cost"))
+			return
 		}
-		if estimate == nil {
-			estimate = &core.WorkEstimate{
-				Seats: 1,
-			}
-		}
-		scoped.Estimate = estimate
+		scoped.Estimate = vr
 
 		scheduler := e.factory.GetScheduler(r)
 		finisher, err := scheduler.Schedule(r)
@@ -70,11 +71,11 @@ func (e *executor) Build() http.Handler {
 				// decision had been made to execute the request, and the
 				// user handler actually being executed.
 				if scoped.PostDecisionExecutionWait != nil {
-					scoped.PostDecisionExecutionWait.TookSince(e.clock)
+					scoped.PostDecisionExecutionWait.Done()
 				}
 				e.events.ExecutionStarting(r)
 				defer func() {
-					scoped.TotalLatency.TookSince(e.clock)
+					scoped.TotalLatency.Done()
 					e.events.ExecutionEnded(r)
 				}()
 
