@@ -40,11 +40,11 @@ type shuffleShardingQueueAssigner struct {
 	queueset QueueSetAccessor
 }
 
-func (s *shuffleShardingQueueAssigner) Assign(_ flow.RequestFlow) (fairqueuing.FairQueue, error) {
+func (s *shuffleShardingQueueAssigner) Assign(rf flow.RequestFlow) (fairqueuing.FairQueue, error) {
 	var backHand [8]int
 	// Deal into a data structure, so that the order of visit below is not necessarily the order of the deal.
 	// This removes bias in the case of flows with overlapping hands.
-	hand := s.dealer.DealIntoHand(0, backHand[:])
+	hand := s.dealer.DealIntoHand(uint64(rf.Hash), backHand[:])
 
 	// select the queue that has minimum work
 	minimum := virtual.MaxSeatSeconds

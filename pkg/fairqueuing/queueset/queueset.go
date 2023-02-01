@@ -86,10 +86,6 @@ func (qs *queueset) Name() string {
 	return ""
 }
 
-//func (qs *queueset) Accessor() queueassigner.QueueSetAccessor {
-//	return queues(qs.queues)
-//}
-
 func (qs *queueset) TotalQueues() int {
 	return len(qs.queues)
 }
