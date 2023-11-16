@@ -1,44 +1,50 @@
 package fairqueuing
 
 import (
-	"net/http"
+	"context"
+	"time"
 
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
 )
 
-// walkFunc is called for each request in the list in the
-// oldest -> newest order.
-// ok: if walkFunc returns false then the iteration stops immediately.
-// walkFunc may remove the given request from the fifo,
-// but may not mutate the fifo in any other way.
-type WalkFunc func(r *http.Request) (ok bool)
+type CostEstimator interface {
+	EstimateCost() (seats uint32, width virtual.SeatSeconds)
+}
 
-// Internal interface to abstract out the implementation details
-// of the underlying list used to maintain the requests.
-//
-// Note that a fifo, including the DisposerFunc returned from Enqueue,
-// is not safe for concurrent use by multiple goroutines.
-type FIFO interface {
-	// Enqueue enqueues the specified request into the list and
-	// returns a DisposerFunc function that can be used to remove the
-	// request from the list
-	Enqueue(*http.Request) DisposerFunc
+type Hasher interface {
+	Hash() uint64
+}
 
-	// Dequeue pulls out the oldest request from the list.
-	Dequeue() (*http.Request, bool)
+type Request interface {
+	CostEstimator
+	virtual.RTracker
+	DecisionSetter
+	FlowCalculator
 
-	// Peek returns the oldest request without removing it.
-	Peek() (*http.Request, bool)
+	Context() context.Context
+	QueueWaitLatencyTracker() LatencyTracker
+	PostDecisionExecutionWaitLatencyTracker() LatencyTracker
+}
 
-	// Length returns the number of requests in the list.
-	Length() int
+type FlowIDType uint64
 
-	// Walk iterates through the list in order of oldest -> newest
-	// and executes the specified walkFunc for each request in that order.
-	//
-	// if the specified walkFunc returns false the Walk function
-	// stops the walk an returns immediately.
-	Walk(WalkFunc)
+type FlowCalculator interface {
+	GetFlowID() FlowIDType
+}
+
+type FairQueueAccessor interface {
+	TotalQueues() int
+	GetFairQueue(int) FairQueue
+}
+
+type QueueSelector interface {
+	SelectQueue(FairQueueAccessor, FlowIDType) (FairQueue, error)
+}
+
+type LatencyTracker interface {
+	Start()
+	Finish()
+	GetDuration() (startedAt time.Time, duration time.Duration)
 }
 
 type SeatCount struct {
@@ -59,6 +65,45 @@ func (rc RequestCount) Total() uint32 {
 	return rc.Executing + rc.Waiting
 }
 
+// A decision about a request
+type DecisionType int
+
+// Values passed through a request's decision
+const (
+	DecisionNone DecisionType = iota
+
+	// This one's context timed out / was canceled
+	DecisionTimeout
+
+	// Serve this one
+	DecisionExecute
+)
+
+type DecisionSetter interface {
+	SetDecision(DecisionType) bool
+}
+
+type DecisionWaiter interface {
+	WaitForDecision() DecisionType
+}
+
+type FairQueue interface {
+	Enqueue(Request) (QueueCleanupCallbacks, error)
+	DequeueForExecution(dequeued, decided func(Request)) (Request, bool)
+
+	GetNextFinishR() virtual.SeatSeconds
+
+	Peek() (Request, bool)
+	Length() int
+	GetWork() SeatCount
+}
+
+type FairQueueSet interface {
+	Name() string
+	Enqueue(Request) (QueueCleanupCallbacks, error)
+	Dispatch() (bool, error)
+}
+
 type Disposer interface {
 	Dispose()
 }
@@ -72,21 +117,4 @@ func (d DisposerFunc) Dispose() {
 type QueueCleanupCallbacks struct {
 	PostExecution Disposer
 	PostTimeout   Disposer
-}
-
-type FairQueue interface {
-	Enqueue(*http.Request) (QueueCleanupCallbacks, error)
-	DequeueForExecution(dequeued, decided func(*http.Request)) (*http.Request, bool)
-
-	GetNextFinishR() virtual.SeatSeconds
-
-	Peek() (*http.Request, bool)
-	Length() int
-	GetWork() SeatCount
-}
-
-type FairQueueSet interface {
-	Name() string
-	Enqueue(*http.Request) (QueueCleanupCallbacks, error)
-	Dispatch() (bool, error)
 }

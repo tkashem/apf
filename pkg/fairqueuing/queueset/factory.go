@@ -1,13 +1,9 @@
 package queueset
 
-import (
-	"github.com/tkashem/apf/pkg/fairqueuing/queueassigner"
-	"github.com/tkashem/apf/pkg/scheduler"
-)
+import "github.com/tkashem/apf/pkg/fairqueuing"
 
 type QueueAssignerFactory interface {
-	WithQueueSetAccessor(queueassigner.QueueSetAccessor)
-	New() (queueassigner.QueueAssigner, error)
+	New() (fairqueuing.QueueSelector, error)
 }
 
 type Config struct {
@@ -19,5 +15,5 @@ type Config struct {
 type CompletedConfig struct {
 	Config
 	TotalSeats uint32
-	Events     scheduler.Events
+	Events     Events
 }

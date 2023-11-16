@@ -68,6 +68,14 @@ func NewDealer(deckSize, handSize int) (*Dealer, error) {
 	}, nil
 }
 
+func (d *Dealer) DeckSize() int {
+	return d.deckSize
+}
+
+func (d *Dealer) HandSize() int {
+	return d.handSize
+}
+
 // Deal shuffles a card deck and deals a hand of cards, using the given hashValue as the source of entropy.
 // The deck size and hand size are properties of the Dealer.
 // This function synchronously makes sequential calls to pick, one for each dealt card.

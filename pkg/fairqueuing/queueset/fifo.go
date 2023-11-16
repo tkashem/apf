@@ -1,8 +1,7 @@
-package container
+package queueset
 
 import (
 	"container/list"
-	"net/http"
 
 	"github.com/tkashem/apf/pkg/fairqueuing"
 )
@@ -23,7 +22,7 @@ func (l *requestFIFO) Length() int {
 	return l.Len()
 }
 
-func (l *requestFIFO) Enqueue(r *http.Request) fairqueuing.DisposerFunc {
+func (l *requestFIFO) Enqueue(r fairqueuing.Request) fairqueuing.DisposerFunc {
 	e := l.PushBack(r)
 
 	return func() {
@@ -35,19 +34,19 @@ func (l *requestFIFO) Enqueue(r *http.Request) fairqueuing.DisposerFunc {
 	}
 }
 
-func (l *requestFIFO) Dequeue() (*http.Request, bool) {
+func (l *requestFIFO) Dequeue() (fairqueuing.Request, bool) {
 	return l.getFirst(true)
 }
 
-func (l *requestFIFO) Peek() (*http.Request, bool) {
+func (l *requestFIFO) Peek() (fairqueuing.Request, bool) {
 	return l.getFirst(false)
 }
 
-func (l *requestFIFO) Walk(f fairqueuing.WalkFunc) {
+func (l *requestFIFO) Walk(f WalkFunc) {
 	var next *list.Element
 	for current := l.Front(); current != nil; current = next {
 		next = current.Next() // f is allowed to remove current
-		if r, ok := current.Value.(*http.Request); ok {
+		if r, ok := current.Value.(fairqueuing.Request); ok {
 			if !f(r) {
 				return
 			}
@@ -55,7 +54,7 @@ func (l *requestFIFO) Walk(f fairqueuing.WalkFunc) {
 	}
 }
 
-func (l *requestFIFO) getFirst(remove bool) (*http.Request, bool) {
+func (l *requestFIFO) getFirst(remove bool) (fairqueuing.Request, bool) {
 	e := l.Front()
 	if e == nil {
 		return nil, false
@@ -68,6 +67,6 @@ func (l *requestFIFO) getFirst(remove bool) (*http.Request, bool) {
 		}()
 	}
 
-	request, ok := e.Value.(*http.Request)
+	request, ok := e.Value.(fairqueuing.Request)
 	return request, ok
 }

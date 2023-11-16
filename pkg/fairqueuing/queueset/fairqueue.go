@@ -2,16 +2,13 @@ package queueset
 
 import (
 	"math"
-	"net/http"
 
-	apfcontext "github.com/tkashem/apf/pkg/context"
 	"github.com/tkashem/apf/pkg/fairqueuing"
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
-	"github.com/tkashem/apf/pkg/scheduler"
 )
 
 type fairQueue struct {
-	fifo fairqueuing.FIFO
+	fifo FIFO
 
 	// requests is the count in the real world.
 	requests fairqueuing.RequestCount
@@ -30,50 +27,46 @@ func (q *fairQueue) GetNextFinishR() virtual.SeatSeconds {
 	return q.nextFinishR
 }
 
-func (q *fairQueue) Enqueue(r *http.Request) (fairqueuing.QueueCleanupCallbacks, error) {
-	scoped, err := apfcontext.RequestScopedFrom(r.Context())
-	if err != nil {
-		return fairqueuing.QueueCleanupCallbacks{}, err
-	}
+func (q *fairQueue) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCallbacks, error) {
 	if q.fifo.Length() == 0 && q.seats.InUse == 0 {
 		q.nextFinishR = virtual.MinSeatSeconds
 	}
 
 	removeFn := q.fifo.Enqueue(r)
-	q.seats.Waiting += scoped.Estimate.GetSeats()
+	seats, width := r.EstimateCost()
+
+	q.seats.Waiting += seats
 	q.requests.Waiting += 1
 
 	rt := q.vclock.RT()
 	startR := virtual.SeatSeconds(math.Max(float64(rt), float64(q.nextFinishR)))
-	finishR := startR + scoped.Estimate.GetWidth()
+	finishR := startR + width
 
 	q.nextFinishR = finishR
-	scoped.RTracker.OnStart(rt, startR, finishR)
+	r.OnStart(rt, startR, finishR)
 
 	return fairqueuing.QueueCleanupCallbacks{
 		PostExecution: fairqueuing.DisposerFunc(func() {}),
 		PostTimeout: fairqueuing.DisposerFunc(func() {
 			removeFn()
-			q.seats.Waiting -= scoped.Estimate.GetSeats()
+			q.seats.Waiting -= seats
 			q.requests.Waiting -= 1
 		}),
 	}, nil
 }
 
-func (q *fairQueue) DequeueForExecution(dequeued, decided func(r *http.Request)) (*http.Request, bool) {
+func (q *fairQueue) DequeueForExecution(dequeued, decided func(r fairqueuing.Request)) (fairqueuing.Request, bool) {
 	request, ok := q.fifo.Dequeue()
 	if !ok {
 		return nil, false
 	}
-	scoped, err := apfcontext.RequestScopedFrom(request.Context())
-	if err != nil {
-		return nil, false
-	}
-	q.seats.Waiting -= scoped.Estimate.GetSeats()
+
+	seats, _ := request.EstimateCost()
+	q.seats.Waiting -= seats
 	q.requests.Waiting -= 1
 	dequeued(request)
 
-	if ok := scoped.Decision.SetDecision(scheduler.DecisionExecute); !ok {
+	if ok := request.SetDecision(fairqueuing.DecisionExecute); !ok {
 		return nil, false
 	}
 	q.requests.Executing += 1
@@ -82,7 +75,7 @@ func (q *fairQueue) DequeueForExecution(dequeued, decided func(r *http.Request))
 	return request, true
 }
 
-func (q *fairQueue) Peek() (*http.Request, bool) {
+func (q *fairQueue) Peek() (fairqueuing.Request, bool) {
 	return q.fifo.Peek()
 }
 

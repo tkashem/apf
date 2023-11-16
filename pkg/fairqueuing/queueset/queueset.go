@@ -3,15 +3,10 @@ package queueset
 import (
 	"fmt"
 	"math"
-	"net/http"
 	"sync"
 
-	apfcontext "github.com/tkashem/apf/pkg/context"
 	"github.com/tkashem/apf/pkg/fairqueuing"
-	"github.com/tkashem/apf/pkg/fairqueuing/container"
-	"github.com/tkashem/apf/pkg/fairqueuing/queueassigner"
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
-	"github.com/tkashem/apf/pkg/scheduler"
 	"k8s.io/utils/clock"
 )
 
@@ -37,13 +32,12 @@ func NewQueueSet(config *CompletedConfig) (*queueset, error) {
 	queues := make([]fairqueuing.FairQueue, config.NQueues)
 	for i := range queues {
 		queues[i] = &fairQueue{
-			fifo:   container.NewFIFO(),
+			fifo:   NewFIFO(),
 			vclock: vclock,
 		}
 	}
 	qs.queues = queues
 
-	config.QueueAssignerFactory.WithQueueSetAccessor(qs)
 	assigner, err := config.QueueAssignerFactory.New()
 	if err != nil {
 		return nil, err
@@ -76,10 +70,10 @@ type queueset struct {
 	queueMaxLength int
 	queues         []fairqueuing.FairQueue
 	robinIndex     int
-	events         scheduler.Events
+	events         Events
 	clock          clock.Clock
 	vclock         virtual.RTClock
-	assigner       queueassigner.QueueAssigner
+	assigner       fairqueuing.QueueSelector
 }
 
 func (qs *queueset) Name() string {
@@ -94,20 +88,15 @@ func (qs *queueset) GetFairQueue(idx int) fairqueuing.FairQueue {
 	return qs.queues[idx]
 }
 
-func (qs *queueset) Enqueue(r *http.Request) (fairqueuing.QueueCleanupCallbacks, error) {
-	scoped, err := apfcontext.RequestScopedFrom(r.Context())
-	if err != nil {
-		return fairqueuing.QueueCleanupCallbacks{}, err
-	}
-
+func (qs *queueset) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCallbacks, error) {
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
 
-	queue, err := qs.assigner.Assign(scoped.Flow)
+	queue, err := qs.assigner.SelectQueue(qs, r.GetFlowID())
 	if err != nil {
 		return fairqueuing.QueueCleanupCallbacks{}, fmt.Errorf("error assigning queue - %v", err)
 	}
-	qs.events.QueueAssigned(r)
+	qs.events.QueueSelected(queue, r)
 
 	// can we fit the request?
 	if qs.seats.InUse >= qs.totalSeats && queue.Length() >= qs.queueMaxLength {
@@ -118,12 +107,14 @@ func (qs *queueset) Enqueue(r *http.Request) (fairqueuing.QueueCleanupCallbacks,
 	if err != nil {
 		return fairqueuing.QueueCleanupCallbacks{}, enqueueErr
 	}
-	scoped.QueueWaitLatency = apfcontext.NewLatencyTracker(qs.clock)
+	r.QueueWaitLatencyTracker().Start()
 	qs.vclock.Tick()
-	qs.seats.Waiting += scoped.Estimate.GetSeats()
+
+	seats, _ := r.EstimateCost()
+	qs.seats.Waiting += seats
 	qs.requests.Waiting += 1
 
-	qs.events.Enqueued(r)
+	qs.events.Enqueued(queue, r)
 
 	disposer := fairqueuing.QueueCleanupCallbacks{
 		// if a request has been executed, that means the Dispatch method
@@ -165,7 +156,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 
 	var minQueue fairqueuing.FairQueue
 	var minIndex int
-	var minScoped *apfcontext.RequestScoped
+	var minRequest fairqueuing.Request
 	minFinishR := virtual.MaxSeatSeconds
 	for range qs.queues {
 		qs.robinIndex = (qs.robinIndex + 1) % len(qs.queues)
@@ -174,20 +165,15 @@ func (qs *queueset) Dispatch() (bool, error) {
 		if !ok {
 			continue
 		}
-		scoped, err := apfcontext.RequestScopedFrom(oldest.Context())
-		if err != nil {
-			// impossible case, log error
-			continue
-		}
 
-		thisFinishR := scoped.RTracker.FinishR()
+		thisFinishR := oldest.FinishR()
 		if thisFinishR < minFinishR {
 			minFinishR = thisFinishR
 			minQueue = queue
-			minScoped = scoped
+			minRequest = oldest
 		}
 	}
-	if minQueue == nil || minScoped == nil {
+	if minQueue == nil || minRequest == nil {
 		return false, nil
 	}
 
@@ -196,14 +182,14 @@ func (qs *queueset) Dispatch() (bool, error) {
 	// win in the case that the virtual finish times are the same
 	qs.robinIndex = minIndex
 
-	seats := minScoped.Estimate.GetSeats()
+	seats, _ := minRequest.EstimateCost()
 	if qs.seats.InUse+seats > qs.totalSeats {
 		return false, accommodationErr
 	}
 
 	// remove the request from queue for execution
-	_, ok := minQueue.DequeueForExecution(func(r *http.Request) {
-		defer qs.events.Dequeued(r)
+	_, ok := minQueue.DequeueForExecution(func(r fairqueuing.Request) {
+		defer qs.events.Dequeued(minQueue, r)
 
 		qs.vclock.Tick()
 		qs.requests.Waiting -= 1
@@ -215,9 +201,9 @@ func (qs *queueset) Dispatch() (bool, error) {
 		//     is being removed from the queue before being rejected.
 		// we are here for a, and we want to track how much the request
 		// spent inside of the queue waiting.
-		minScoped.QueueWaitLatency.Done()
-	}, func(r *http.Request) {
-		defer qs.events.DecisionChanged(r, scheduler.DecisionExecute)
+		minRequest.QueueWaitLatencyTracker().Finish()
+	}, func(r fairqueuing.Request) {
+		defer qs.events.DecisionChanged(r, fairqueuing.DecisionExecute)
 
 		qs.requests.Executing += 1
 		qs.seats.InUse += seats
@@ -225,7 +211,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 		// we have just made a decision to execute the request, we want
 		// to track the latency from here until the user handler starts
 		// executing.
-		minScoped.PostDecisionExecutionWait = apfcontext.NewLatencyTracker(qs.clock)
+		minRequest.PostDecisionExecutionWaitLatencyTracker().Start()
 	})
 	if !ok {
 		return false, queueEmptyErr
@@ -234,30 +220,20 @@ func (qs *queueset) Dispatch() (bool, error) {
 	return true, nil
 }
 
-func (qs *queueset) finishLocked(r *http.Request) {
-	scoped, err := apfcontext.RequestScopedFrom(r.Context())
-	if err != nil {
-		// impossible case, log error
-		return
-	}
-
-	qs.seats.InUse -= scoped.Estimate.GetSeats()
+func (qs *queueset) finishLocked(r fairqueuing.Request) {
+	seats, _ := r.EstimateCost()
+	qs.seats.InUse -= seats
 	qs.requests.Executing -= 1
 	qs.vclock.Tick()
-	scoped.RTracker.OnDone(qs.vclock.RT())
+	r.OnDone(qs.vclock.RT())
 }
 
-func (qs *queueset) timeoutLocked(r *http.Request) {
-	scoped, err := apfcontext.RequestScopedFrom(r.Context())
-	if err != nil {
-		// impossible case, log error
-		return
-	}
-
-	qs.seats.Waiting -= scoped.Estimate.GetSeats()
+func (qs *queueset) timeoutLocked(r fairqueuing.Request) {
+	seats, _ := r.EstimateCost()
+	qs.seats.Waiting -= seats
 	qs.requests.Waiting -= 1
 	qs.vclock.Tick()
-	scoped.RTracker.OnDone(qs.vclock.RT())
+	r.OnDone(qs.vclock.RT())
 
 	// There are two ways a request is dequeued:
 	//  a) scheduler dequeues it and schedules it for execution
@@ -266,7 +242,7 @@ func (qs *queueset) timeoutLocked(r *http.Request) {
 	//
 	// we are here for b, and we want to track how much the request
 	// spent inside of the queue waiting
-	scoped.QueueWaitLatency.Done()
+	r.QueueWaitLatencyTracker().Finish()
 }
 
 func (qs *queueset) getWorkLocked() (int, int) {
