@@ -21,12 +21,8 @@ func NewQueueSet(config *Config) (*queueset, error) {
 		return nil, fmt.Errorf("seats must be positive")
 	}
 
-	qs := &queueset{}
-
-	clock := clock.RealClock{}
-	qs.clock = clock
-
-	vclock := virtual.NewRTClock(clock, qs.getWorkLocked)
+	qs := &queueset{clock: config.Clock}
+	vclock := virtual.NewRTClock(qs.clock, qs.getWorkLocked)
 	qs.vclock = vclock
 
 	queues := make([]fairqueue, config.QueuingConfig.NQueues)

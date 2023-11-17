@@ -22,6 +22,7 @@ type Request interface {
 	FlowCalculator
 
 	Context() context.Context
+	String()
 	QueueWaitLatencyTracker() LatencyTracker
 	PostDecisionExecutionWaitLatencyTracker() LatencyTracker
 }
