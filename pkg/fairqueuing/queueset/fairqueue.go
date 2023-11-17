@@ -27,7 +27,7 @@ func (q *fairQueue) GetNextFinishR() virtual.SeatSeconds {
 	return q.nextFinishR
 }
 
-func (q *fairQueue) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCallbacks, error) {
+func (q *fairQueue) Enqueue(r fairqueuing.Request) (queueCleanupCallbacks, error) {
 	if q.fifo.Length() == 0 && q.seats.InUse == 0 {
 		q.nextFinishR = virtual.MinSeatSeconds
 	}
@@ -45,13 +45,13 @@ func (q *fairQueue) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCall
 	q.nextFinishR = finishR
 	r.OnStart(rt, startR, finishR)
 
-	return fairqueuing.QueueCleanupCallbacks{
-		PostExecution: fairqueuing.DisposerFunc(func() {}),
-		PostTimeout: fairqueuing.DisposerFunc(func() {
+	return queueCleanupCallbacks{
+		PostExecution: func() {},
+		PostTimeout: func() {
 			removeFn()
 			q.seats.Waiting -= seats
 			q.requests.Waiting -= 1
-		}),
+		},
 	}, nil
 }
 

@@ -1,4 +1,4 @@
-package queueassigner
+package queueselector
 
 import (
 	"fmt"

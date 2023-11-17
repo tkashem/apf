@@ -3,18 +3,18 @@ package queueset
 import (
 	"testing"
 
-	"github.com/tkashem/apf/pkg/fairqueuing/queueassigner"
+	"github.com/tkashem/apf/pkg/fairqueuing/queueselector"
 )
 
 func Test(t *testing.T) {
-	config := &CompletedConfig{
-		Config: Config{
-			NQueues:              3,
-			QueueMaxLength:       128,
-			QueueAssignerFactory: &queueassigner.RoundRobinQueueAssignerFactory{},
+	config := &Config{
+		QueuingConfig: &QueuingConfig{
+			NQueues:        3,
+			QueueMaxLength: 128,
 		},
-		TotalSeats: 1,
-		Events:     nil,
+		TotalSeats:    1,
+		Events:        nil,
+		QueueSelector: queueselector.NewRoundRobinQueueSelector(),
 	}
 
 	_, err := NewQueueSet(config)

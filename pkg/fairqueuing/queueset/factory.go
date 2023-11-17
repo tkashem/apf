@@ -1,19 +1,17 @@
 package queueset
 
-import "github.com/tkashem/apf/pkg/fairqueuing"
-
-type QueueAssignerFactory interface {
-	New() (fairqueuing.QueueSelector, error)
-}
+import (
+	"github.com/tkashem/apf/pkg/fairqueuing"
+)
 
 type Config struct {
-	NQueues              int
-	QueueMaxLength       int
-	QueueAssignerFactory QueueAssignerFactory
+	TotalSeats    uint32
+	QueuingConfig *QueuingConfig
+	QueueSelector fairqueuing.QueueSelector
+	Events        Events
 }
 
-type CompletedConfig struct {
-	Config
-	TotalSeats uint32
-	Events     Events
+type QueuingConfig struct {
+	NQueues        int
+	QueueMaxLength int
 }

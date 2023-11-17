@@ -18,7 +18,7 @@ type Hasher interface {
 type Request interface {
 	CostEstimator
 	virtual.RTracker
-	DecisionSetter
+	DecisionWaiterSetter
 	FlowCalculator
 
 	Context() context.Context
@@ -87,10 +87,12 @@ type DecisionWaiter interface {
 	WaitForDecision() DecisionType
 }
 
-type FairQueue interface {
-	Enqueue(Request) (QueueCleanupCallbacks, error)
-	DequeueForExecution(dequeued, decided func(Request)) (Request, bool)
+type DecisionWaiterSetter interface {
+	DecisionWaiter
+	DecisionSetter
+}
 
+type FairQueue interface {
 	GetNextFinishR() virtual.SeatSeconds
 
 	Peek() (Request, bool)
@@ -98,23 +100,12 @@ type FairQueue interface {
 	GetWork() SeatCount
 }
 
+type Finisher interface {
+	Finish(func())
+}
+
 type FairQueueSet interface {
 	Name() string
-	Enqueue(Request) (QueueCleanupCallbacks, error)
+	Enqueue(Request) (Finisher, error)
 	Dispatch() (bool, error)
-}
-
-type Disposer interface {
-	Dispose()
-}
-
-type DisposerFunc func()
-
-func (d DisposerFunc) Dispose() {
-	d()
-}
-
-type QueueCleanupCallbacks struct {
-	PostExecution Disposer
-	PostTimeout   Disposer
 }

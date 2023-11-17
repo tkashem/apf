@@ -16,7 +16,7 @@ var (
 	enqueueErr       = fmt.Errorf("failed to enqueue the request")
 )
 
-func NewQueueSet(config *CompletedConfig) (*queueset, error) {
+func NewQueueSet(config *Config) (*queueset, error) {
 	if config.TotalSeats < 1 {
 		return nil, fmt.Errorf("seats must be positive")
 	}
@@ -29,7 +29,7 @@ func NewQueueSet(config *CompletedConfig) (*queueset, error) {
 	vclock := virtual.NewRTClock(clock, qs.getWorkLocked)
 	qs.vclock = vclock
 
-	queues := make([]fairqueuing.FairQueue, config.NQueues)
+	queues := make([]*fairQueue, config.QueuingConfig.NQueues)
 	for i := range queues {
 		queues[i] = &fairQueue{
 			fifo:   NewFIFO(),
@@ -37,15 +37,10 @@ func NewQueueSet(config *CompletedConfig) (*queueset, error) {
 		}
 	}
 	qs.queues = queues
-
-	assigner, err := config.QueueAssignerFactory.New()
-	if err != nil {
-		return nil, err
-	}
-	qs.assigner = assigner
+	qs.assigner = config.QueueSelector
 
 	qs.totalSeats = config.TotalSeats
-	qs.queueMaxLength = config.QueueMaxLength
+	qs.queueMaxLength = config.QueuingConfig.QueueMaxLength
 	qs.events = config.Events
 	return qs, nil
 }
@@ -76,6 +71,11 @@ type queueset struct {
 	assigner       fairqueuing.QueueSelector
 }
 
+type queueCleanupCallbacks struct {
+	PostExecution func()
+	PostTimeout   func()
+}
+
 func (qs *queueset) Name() string {
 	return ""
 }
@@ -88,24 +88,24 @@ func (qs *queueset) GetFairQueue(idx int) fairqueuing.FairQueue {
 	return qs.queues[idx]
 }
 
-func (qs *queueset) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCallbacks, error) {
+func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
 
 	queue, err := qs.assigner.SelectQueue(qs, r.GetFlowID())
 	if err != nil {
-		return fairqueuing.QueueCleanupCallbacks{}, fmt.Errorf("error assigning queue - %v", err)
+		return nil, fmt.Errorf("error assigning queue - %v", err)
 	}
 	qs.events.QueueSelected(queue, r)
 
 	// can we fit the request?
 	if qs.seats.InUse >= qs.totalSeats && queue.Length() >= qs.queueMaxLength {
-		return fairqueuing.QueueCleanupCallbacks{}, accommodationErr
+		return nil, accommodationErr
 	}
 
 	queueDisposer, err := queue.Enqueue(r)
 	if err != nil {
-		return fairqueuing.QueueCleanupCallbacks{}, enqueueErr
+		return nil, enqueueErr
 	}
 	r.QueueWaitLatencyTracker().Start()
 	qs.vclock.Tick()
@@ -116,11 +116,11 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCall
 
 	qs.events.Enqueued(queue, r)
 
-	disposer := fairqueuing.QueueCleanupCallbacks{
+	disposer := queueCleanupCallbacks{
 		// if a request has been executed, that means the Dispatch method
 		// had already dequeued, and scheduled it for execution, in this
 		// case we no longer need to remove it from the queue.
-		PostExecution: fairqueuing.DisposerFunc(func() {
+		PostExecution: func() {
 			defer qs.events.Disposed(r)
 			func() {
 				qs.lock.Lock()
@@ -129,8 +129,8 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCall
 				queueDisposer.PostExecution.Dispose()
 				qs.finishLocked(r)
 			}()
-		}),
-		PostTimeout: fairqueuing.DisposerFunc(func() {
+		},
+		PostTimeout: func() {
 			// if a request has timed out while waiting to be executed, that
 			// means the Dispatch method had not had a successful attempt to
 			// schedule it for execution, and thus it remains in the queue, so
@@ -143,11 +143,11 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (fairqueuing.QueueCleanupCall
 				queueDisposer.PostTimeout.Dispose()
 				qs.timeoutLocked(r)
 			}()
-		}),
+		},
 	}
 
 	// cleanup after execution
-	return disposer, nil
+	return &queuedFinisher{waiter: r, callbacks: disposer}, nil
 }
 
 func (qs *queueset) Dispatch() (bool, error) {
