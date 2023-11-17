@@ -94,7 +94,6 @@ type DecisionWaiterSetter interface {
 
 type FairQueue interface {
 	GetNextFinishR() virtual.SeatSeconds
-
 	Peek() (Request, bool)
 	Length() int
 	GetWork() SeatCount

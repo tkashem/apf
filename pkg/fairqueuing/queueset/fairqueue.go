@@ -8,7 +8,7 @@ import (
 )
 
 type fairQueue struct {
-	fifo FIFO
+	fifo fifo
 
 	// requests is the count in the real world.
 	requests fairqueuing.RequestCount
@@ -27,12 +27,12 @@ func (q *fairQueue) GetNextFinishR() virtual.SeatSeconds {
 	return q.nextFinishR
 }
 
-func (q *fairQueue) Enqueue(r fairqueuing.Request) (queueCleanupCallbacks, error) {
+func (q *fairQueue) Enqueue(r fairqueuing.Request) (disposer, disposer, error) {
 	if q.fifo.Length() == 0 && q.seats.InUse == 0 {
 		q.nextFinishR = virtual.MinSeatSeconds
 	}
 
-	removeFn := q.fifo.Enqueue(r)
+	disposer := q.fifo.Enqueue(r)
 	seats, width := r.EstimateCost()
 
 	q.seats.Waiting += seats
@@ -45,34 +45,34 @@ func (q *fairQueue) Enqueue(r fairqueuing.Request) (queueCleanupCallbacks, error
 	q.nextFinishR = finishR
 	r.OnStart(rt, startR, finishR)
 
-	return queueCleanupCallbacks{
-		PostExecution: func() {},
-		PostTimeout: func() {
-			removeFn()
-			q.seats.Waiting -= seats
-			q.requests.Waiting -= 1
-		},
-	}, nil
+	postExecution := disposerFunc(func() {
+		q.seats.InUse -= seats
+		q.requests.Executing -= 1
+	})
+	postTimeout := disposerFunc(func() {
+		disposer.Dispose()
+		q.seats.Waiting -= seats
+		q.requests.Waiting -= 1
+	})
+	return postExecution, postTimeout, nil
 }
 
-func (q *fairQueue) DequeueForExecution(dequeued, decided func(r fairqueuing.Request)) (fairqueuing.Request, bool) {
+func (q *fairQueue) Dequeue() (fairqueuing.Request, disposer, bool) {
 	request, ok := q.fifo.Dequeue()
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 
 	seats, _ := request.EstimateCost()
 	q.seats.Waiting -= seats
 	q.requests.Waiting -= 1
-	dequeued(request)
 
-	if ok := request.SetDecision(fairqueuing.DecisionExecute); !ok {
-		return nil, false
-	}
-	q.requests.Executing += 1
-	decided(request)
-
-	return request, true
+	// before execution begins
+	preExecution := disposerFunc(func() {
+		q.seats.InUse += seats
+		q.requests.Executing += 1
+	})
+	return request, preExecution, true
 }
 
 func (q *fairQueue) Peek() (fairqueuing.Request, bool) {

@@ -29,7 +29,7 @@ func NewQueueSet(config *Config) (*queueset, error) {
 	vclock := virtual.NewRTClock(clock, qs.getWorkLocked)
 	qs.vclock = vclock
 
-	queues := make([]*fairQueue, config.QueuingConfig.NQueues)
+	queues := make([]fairqueue, config.QueuingConfig.NQueues)
 	for i := range queues {
 		queues[i] = &fairQueue{
 			fifo:   NewFIFO(),
@@ -63,17 +63,12 @@ type queueset struct {
 	seats fairqueuing.SeatCount
 
 	queueMaxLength int
-	queues         []fairqueuing.FairQueue
+	queues         []fairqueue
 	robinIndex     int
 	events         Events
 	clock          clock.Clock
 	vclock         virtual.RTClock
 	assigner       fairqueuing.QueueSelector
-}
-
-type queueCleanupCallbacks struct {
-	PostExecution func()
-	PostTimeout   func()
 }
 
 func (qs *queueset) Name() string {
@@ -92,10 +87,12 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
 
-	queue, err := qs.assigner.SelectQueue(qs, r.GetFlowID())
+	selected, err := qs.assigner.SelectQueue(qs, r.GetFlowID())
 	if err != nil {
 		return nil, fmt.Errorf("error assigning queue - %v", err)
 	}
+
+	queue := selected.(fairqueue)
 	qs.events.QueueSelected(queue, r)
 
 	// can we fit the request?
@@ -103,7 +100,7 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 		return nil, accommodationErr
 	}
 
-	queueDisposer, err := queue.Enqueue(r)
+	queuePostExecution, queuePostTimeout, err := queue.Enqueue(r)
 	if err != nil {
 		return nil, enqueueErr
 	}
@@ -116,45 +113,44 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 
 	qs.events.Enqueued(queue, r)
 
-	disposer := queueCleanupCallbacks{
-		// if a request has been executed, that means the Dispatch method
-		// had already dequeued, and scheduled it for execution, in this
-		// case we no longer need to remove it from the queue.
-		PostExecution: func() {
-			defer qs.events.Disposed(r)
-			func() {
-				qs.lock.Lock()
-				defer qs.lock.Unlock()
+	// if a request has been executed, that means the Dispatch method
+	// had already dequeued, and scheduled it for execution, in this
+	// case we no longer need to remove it from the queue.
+	postExecution := disposerFunc(func() {
+		defer qs.events.Disposed(r)
+		func() {
+			qs.lock.Lock()
+			defer qs.lock.Unlock()
 
-				queueDisposer.PostExecution.Dispose()
-				qs.finishLocked(r)
-			}()
-		},
-		PostTimeout: func() {
-			// if a request has timed out while waiting to be executed, that
-			// means the Dispatch method had not had a successful attempt to
-			// schedule it for execution, and thus it remains in the queue, so
-			// we should remove it from its queue.
-			defer qs.events.Timeout(r)
-			func() {
-				qs.lock.Lock()
-				defer qs.lock.Unlock()
+			queuePostExecution.Dispose()
+			qs.finishLocked(r)
+		}()
+	})
 
-				queueDisposer.PostTimeout.Dispose()
-				qs.timeoutLocked(r)
-			}()
-		},
-	}
+	postTimeout := disposerFunc(func() {
+		// if a request has timed out while waiting to be executed, that
+		// means the Dispatch method had not had a successful attempt to
+		// schedule it for execution, and thus it remains in the queue, so
+		// we should remove it from its queue.
+		defer qs.events.Timeout(r)
+		func() {
+			qs.lock.Lock()
+			defer qs.lock.Unlock()
+
+			queuePostTimeout.Dispose()
+			qs.timeoutLocked(r)
+		}()
+	})
 
 	// cleanup after execution
-	return &queuedFinisher{waiter: r, callbacks: disposer}, nil
+	return &queuedFinisher{waiter: r, postExecution: postExecution, postTimeout: postTimeout}, nil
 }
 
 func (qs *queueset) Dispatch() (bool, error) {
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
 
-	var minQueue fairqueuing.FairQueue
+	var minQueue fairqueue
 	var minIndex int
 	var minRequest fairqueuing.Request
 	minFinishR := virtual.MaxSeatSeconds
@@ -187,9 +183,15 @@ func (qs *queueset) Dispatch() (bool, error) {
 		return false, accommodationErr
 	}
 
-	// remove the request from queue for execution
-	_, ok := minQueue.DequeueForExecution(func(r fairqueuing.Request) {
-		defer qs.events.Dequeued(minQueue, r)
+	_, queuePreExecution, ok := minQueue.Dequeue()
+	if !ok {
+		// we should never be here
+		return false, queueEmptyErr
+	}
+
+	// do the things necessary before the decision is set
+	func() {
+		defer qs.events.Dequeued(minQueue, minRequest)
 
 		qs.vclock.Tick()
 		qs.requests.Waiting -= 1
@@ -202,9 +204,16 @@ func (qs *queueset) Dispatch() (bool, error) {
 		// we are here for a, and we want to track how much the request
 		// spent inside of the queue waiting.
 		minRequest.QueueWaitLatencyTracker().Finish()
-	}, func(r fairqueuing.Request) {
-		defer qs.events.DecisionChanged(r, fairqueuing.DecisionExecute)
+	}()
 
+	if ok := minRequest.SetDecision(fairqueuing.DecisionExecute); !ok {
+		return false, fmt.Errorf("failed to set  a decision for the request")
+	}
+
+	func() {
+		defer qs.events.DecisionChanged(minRequest, fairqueuing.DecisionExecute)
+
+		queuePreExecution.Dispose()
 		qs.requests.Executing += 1
 		qs.seats.InUse += seats
 
@@ -212,11 +221,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 		// to track the latency from here until the user handler starts
 		// executing.
 		minRequest.PostDecisionExecutionWaitLatencyTracker().Start()
-	})
-	if !ok {
-		return false, queueEmptyErr
-	}
-
+	}()
 	return true, nil
 }
 

@@ -22,16 +22,16 @@ func (l *requestFIFO) Length() int {
 	return l.Len()
 }
 
-func (l *requestFIFO) Enqueue(r fairqueuing.Request) fairqueuing.DisposerFunc {
+func (l *requestFIFO) Enqueue(r fairqueuing.Request) disposer {
 	e := l.PushBack(r)
 
-	return func() {
+	return disposerFunc(func() {
 		if e.Value == nil {
 			return
 		}
 		l.Remove(e)
 		e.Value = nil
-	}
+	})
 }
 
 func (l *requestFIFO) Dequeue() (fairqueuing.Request, bool) {
@@ -42,7 +42,7 @@ func (l *requestFIFO) Peek() (fairqueuing.Request, bool) {
 	return l.getFirst(false)
 }
 
-func (l *requestFIFO) Walk(f WalkFunc) {
+func (l *requestFIFO) Walk(f walkFunc) {
 	var next *list.Element
 	for current := l.Front(); current != nil; current = next {
 		next = current.Next() // f is allowed to remove current

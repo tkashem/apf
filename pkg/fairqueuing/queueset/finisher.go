@@ -5,13 +5,13 @@ import (
 )
 
 type queuedFinisher struct {
-	waiter    fairqueuing.DecisionWaiter
-	callbacks queueCleanupCallbacks
+	waiter                     fairqueuing.DecisionWaiter
+	postTimeout, postExecution disposer
 
 	finished bool
 }
 
-func (r *queuedFinisher) Finish(execute func()) {
+func (r *queuedFinisher) Finish(fn func()) {
 	if r.finished {
 		return
 	}
@@ -21,14 +21,14 @@ func (r *queuedFinisher) Finish(execute func()) {
 	switch decision {
 	case fairqueuing.DecisionTimeout:
 		// the request had timed out while in the queue
-		r.callbacks.PostTimeout()
+		r.postTimeout.Dispose()
 
 	case fairqueuing.DecisionExecute:
 		// the request has been dequeued and scheduled for execution
 		// execute the request handler
 		func() {
-			defer r.callbacks.PostExecution()
-			execute()
+			defer r.postExecution.Dispose()
+			fn()
 		}()
 
 	default:

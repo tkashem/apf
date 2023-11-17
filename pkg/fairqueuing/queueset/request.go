@@ -19,18 +19,18 @@ type Events interface {
 // ok: if walkFunc returns false then the iteration stops immediately.
 // walkFunc may remove the given request from the fifo,
 // but may not mutate the fifo in any other way.
-type WalkFunc func(r fairqueuing.Request) (ok bool)
+type walkFunc func(r fairqueuing.Request) (ok bool)
 
 // Internal interface to abstract out the implementation details
 // of the underlying list used to maintain the requests.
 //
 // Note that a fifo, including the DisposerFunc returned from Enqueue,
 // is not safe for concurrent use by multiple goroutines.
-type FIFO interface {
+type fifo interface {
 	// Enqueue enqueues the specified request into the list and
 	// returns a DisposerFunc function that can be used to remove the
 	// request from the list
-	Enqueue(fairqueuing.Request) fairqueuing.DisposerFunc
+	Enqueue(fairqueuing.Request) disposer
 
 	// Dequeue pulls out the oldest request from the list.
 	Dequeue() (fairqueuing.Request, bool)
@@ -46,5 +46,26 @@ type FIFO interface {
 	//
 	// if the specified walkFunc returns false the Walk function
 	// stops the walk an returns immediately.
-	Walk(WalkFunc)
+	Walk(walkFunc)
+}
+
+type fairqueue interface {
+	fairqueuing.FairQueue
+	Dequeue() (request fairqueuing.Request, preExecution disposer, ok bool)
+	Enqueue(r fairqueuing.Request) (postExecution disposer, postTimeout disposer, err error)
+}
+
+type disposer interface {
+	Dispose()
+}
+
+type disposerFunc func()
+
+func (d disposerFunc) Dispose() {
+	d()
+}
+
+type queueCleanupCallbacks struct {
+	PostExecution func()
+	PostTimeout   func()
 }
