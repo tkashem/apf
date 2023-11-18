@@ -2,7 +2,6 @@ package fairqueuing
 
 import (
 	"context"
-	"time"
 
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
 )
@@ -22,9 +21,8 @@ type Request interface {
 	FlowCalculator
 
 	Context() context.Context
-	String()
-	QueueWaitLatencyTracker() LatencyTracker
-	PostDecisionExecutionWaitLatencyTracker() LatencyTracker
+	String() string
+	LatencyTrackers() LatencyTrackers
 }
 
 type FlowIDType uint64
@@ -45,7 +43,14 @@ type QueueSelector interface {
 type LatencyTracker interface {
 	Start()
 	Finish()
-	GetDuration() (startedAt time.Time, duration time.Duration)
+	// GetDuration() (startedAt time.Time, duration time.Duration)
+}
+
+type LatencyTrackers struct {
+	QueueWait                 LatencyTracker
+	PostDecisionExecutionWait LatencyTracker
+	ExecutionDuration         LatencyTracker
+	TotalDuration             LatencyTracker
 }
 
 type SeatCount struct {
@@ -98,6 +103,8 @@ type FairQueue interface {
 	Peek() (Request, bool)
 	Length() int
 	GetWork() SeatCount
+	String() string
+	ID() uint32
 }
 
 type Finisher interface {

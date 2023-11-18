@@ -5,10 +5,9 @@ import (
 )
 
 type queuedFinisher struct {
-	waiter                     fairqueuing.DecisionWaiter
+	request                    fairqueuing.Request
 	postTimeout, postExecution disposer
-
-	finished bool
+	finished                   bool
 }
 
 func (r *queuedFinisher) Finish(fn func()) {
@@ -16,19 +15,33 @@ func (r *queuedFinisher) Finish(fn func()) {
 		return
 	}
 	r.finished = true
+	trackers := r.request.LatencyTrackers()
 
-	decision := r.waiter.WaitForDecision()
+	decision := r.request.WaitForDecision()
 	switch decision {
 	case fairqueuing.DecisionTimeout:
 		// the request had timed out while in the queue
-		r.postTimeout.Dispose()
+		func() {
+			defer trackers.TotalDuration.Finish()
+			r.postTimeout.Dispose()
+		}()
 
 	case fairqueuing.DecisionExecute:
 		// the request has been dequeued and scheduled for execution
 		// execute the request handler
 		func() {
-			defer r.postExecution.Dispose()
-			fn()
+			defer trackers.TotalDuration.Finish()
+
+			trackers.PostDecisionExecutionWait.Finish()
+			func() {
+				defer r.postExecution.Dispose()
+				func() {
+					trackers.ExecutionDuration.Start()
+					defer trackers.ExecutionDuration.Finish()
+					fn()
+				}()
+			}()
+
 		}()
 
 	default:

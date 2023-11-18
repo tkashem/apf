@@ -28,6 +28,7 @@ func NewQueueSet(config *Config) (*queueset, error) {
 	queues := make([]fairqueue, config.QueuingConfig.NQueues)
 	for i := range queues {
 		queues[i] = &fairQueue{
+			id:     uint32(i + 1),
 			fifo:   NewFIFO(),
 			vclock: vclock,
 		}
@@ -80,6 +81,9 @@ func (qs *queueset) GetFairQueue(idx int) fairqueuing.FairQueue {
 }
 
 func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
+	trackers := r.LatencyTrackers()
+	trackers.TotalDuration.Start()
+
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
 
@@ -100,9 +104,9 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 	if err != nil {
 		return nil, enqueueErr
 	}
-	r.QueueWaitLatencyTracker().Start()
-	qs.vclock.Tick()
+	trackers.QueueWait.Start()
 
+	qs.vclock.Tick()
 	seats, _ := r.EstimateCost()
 	qs.seats.Waiting += seats
 	qs.requests.Waiting += 1
@@ -139,7 +143,7 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 	})
 
 	// cleanup after execution
-	return &queuedFinisher{waiter: r, postExecution: postExecution, postTimeout: postTimeout}, nil
+	return &queuedFinisher{request: r, postExecution: postExecution, postTimeout: postTimeout}, nil
 }
 
 func (qs *queueset) Dispatch() (bool, error) {
@@ -174,6 +178,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 	// win in the case that the virtual finish times are the same
 	qs.robinIndex = minIndex
 
+	trackers := minRequest.LatencyTrackers()
 	seats, _ := minRequest.EstimateCost()
 	if qs.seats.InUse+seats > qs.totalSeats {
 		return false, accommodationErr
@@ -199,7 +204,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 		//     is being removed from the queue before being rejected.
 		// we are here for a, and we want to track how much the request
 		// spent inside of the queue waiting.
-		minRequest.QueueWaitLatencyTracker().Finish()
+		trackers.QueueWait.Finish()
 	}()
 
 	if ok := minRequest.SetDecision(fairqueuing.DecisionExecute); !ok {
@@ -216,7 +221,7 @@ func (qs *queueset) Dispatch() (bool, error) {
 		// we have just made a decision to execute the request, we want
 		// to track the latency from here until the user handler starts
 		// executing.
-		minRequest.PostDecisionExecutionWaitLatencyTracker().Start()
+		trackers.PostDecisionExecutionWait.Start()
 	}()
 	return true, nil
 }
@@ -243,7 +248,7 @@ func (qs *queueset) timeoutLocked(r fairqueuing.Request) {
 	//
 	// we are here for b, and we want to track how much the request
 	// spent inside of the queue waiting
-	r.QueueWaitLatencyTracker().Finish()
+	r.LatencyTrackers().QueueWait.Finish()
 }
 
 func (qs *queueset) getWorkLocked() (int, int) {

@@ -64,8 +64,3 @@ type disposerFunc func()
 func (d disposerFunc) Dispose() {
 	d()
 }
-
-type queueCleanupCallbacks struct {
-	PostExecution func()
-	PostTimeout   func()
-}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tkashem/apf/pkg/fairqueuing"
+	"github.com/tkashem/apf/pkg/fairqueuing/promise"
 	"github.com/tkashem/apf/pkg/fairqueuing/queueselector"
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
 
@@ -17,7 +18,7 @@ func Test(t *testing.T) {
 	config := &Config{
 		Clock: clock.RealClock{},
 		QueuingConfig: &QueuingConfig{
-			NQueues:        3,
+			NQueues:        1,
 			QueueMaxLength: 128,
 		},
 		TotalSeats:    1,
@@ -25,9 +26,27 @@ func Test(t *testing.T) {
 		QueueSelector: queueselector.NewRoundRobinQueueSelector(),
 	}
 
-	_, err := NewQueueSet(config)
+	qs, err := NewQueueSet(config)
 	if err != nil {
 		t.Fatalf("failed to create queueset")
+	}
+
+	req := newRequest(1, 1, time.Second)
+	finisher, _ := qs.Enqueue(req)
+	if finisher == nil {
+		t.Errorf("expected the request to be enqueued by the queueset")
+		return
+	}
+
+	qs.Dispatch()
+
+	var executed bool
+	finisher.Finish(func() {
+		executed = true
+		t.Logf("request being executed")
+	})
+	if !executed {
+		t.Errorf("expected the request to be executed")
 	}
 }
 
@@ -36,25 +55,35 @@ type request struct {
 	virtual.RTracker
 	seats    uint32
 	duration time.Duration
-	lt       fairqueuing.LatencyTracker
+	trackers fairqueuing.LatencyTrackers
+	fairqueuing.DecisionWaiterSetter
 }
 
 func (r *request) GetFlowID() fairqueuing.FlowIDType {
 	return fairqueuing.FlowIDType(0)
 }
-func (r *request) GetContext() context.Context {
+func (r *request) Context() context.Context {
 	return context.Background()
 }
 func (r *request) EstimateCost() (seats uint32, width virtual.SeatSeconds) {
 	return r.seats, virtual.SeatsTimesDuration(float64(r.seats), r.duration)
 }
-func (r *request) QueueWaitLatencyTracker() fairqueuing.LatencyTracker                 { return r.lt }
-func (r *request) PostDecisionExecutionWaitLatencyTracker() fairqueuing.LatencyTracker { return r.lt }
-func (r *request) String() string                                                      { return fmt.Sprintf("%d", r.id) }
+func (r *request) LatencyTrackers() fairqueuing.LatencyTrackers { return r.trackers }
+func (r *request) String() string                               { return fmt.Sprintf("%d", r.id) }
 
-func newRequest() *request {
+func newRequest(id uint32, seats uint32, duration time.Duration) *request {
 	return &request{
-		RTracker: virtual.NewRTracker(),
+		id:                   id,
+		seats:                seats,
+		duration:             duration,
+		RTracker:             virtual.NewRTracker(),
+		DecisionWaiterSetter: promise.New(context.Background()),
+		trackers: fairqueuing.LatencyTrackers{
+			QueueWait:                 fakeLatencyTracker{},
+			PostDecisionExecutionWait: fakeLatencyTracker{},
+			ExecutionDuration:         fakeLatencyTracker{},
+			TotalDuration:             fakeLatencyTracker{},
+		},
 	}
 }
 
@@ -69,7 +98,7 @@ func (e events) Enqueued(q fairqueuing.FairQueue, r fairqueuing.Request) {
 	e.t.Logf("enqueued at: %q, request: %q", q, r)
 }
 func (e events) Dequeued(q fairqueuing.FairQueue, r fairqueuing.Request) {
-	e.t.Logf("aequeued from: %q, request: %q", q, r)
+	e.t.Logf("dequeued from: %q, request: %q", q, r)
 }
 func (e events) DecisionChanged(r fairqueuing.Request, d fairqueuing.DecisionType) {
 	e.t.Logf("decision changed for request: %q, decision: %d", r, d)

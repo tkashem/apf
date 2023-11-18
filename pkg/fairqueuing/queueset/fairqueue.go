@@ -1,6 +1,7 @@
 package queueset
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/tkashem/apf/pkg/fairqueuing"
@@ -8,6 +9,7 @@ import (
 )
 
 type fairQueue struct {
+	id   uint32
 	fifo fifo
 
 	// requests is the count in the real world.
@@ -25,6 +27,14 @@ type fairQueue struct {
 
 func (q *fairQueue) GetNextFinishR() virtual.SeatSeconds {
 	return q.nextFinishR
+}
+
+func (q *fairQueue) ID() uint32 {
+	return q.id
+}
+
+func (q *fairQueue) String() string {
+	return fmt.Sprintf("%d", q.id)
 }
 
 func (q *fairQueue) Enqueue(r fairqueuing.Request) (disposer, disposer, error) {

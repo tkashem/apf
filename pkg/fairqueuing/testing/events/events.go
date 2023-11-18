@@ -7,3 +7,5 @@ import (
 type fake struct {
 	clock clocktesting.FakePassiveClock
 }
+
+func (f *fake) Run() {}
