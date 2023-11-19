@@ -80,12 +80,35 @@ func (qs *queueset) GetFairQueue(idx int) fairqueuing.FairQueue {
 	return qs.queues[idx]
 }
 
-func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
-	trackers := r.LatencyTrackers()
-	trackers.TotalDuration.Start()
-
+func (qs *queueset) EnqueueAndDispatch(r fairqueuing.Request) (fairqueuing.Finisher, error) {
 	qs.lock.Lock()
 	defer qs.lock.Unlock()
+
+	finisher, err := qs.enqueue(r)
+	if err != nil {
+		return nil, err
+	}
+	qs.dispatch()
+	return finisher, nil
+}
+
+func (qs *queueset) Dispatch() (bool, error) {
+	qs.lock.Lock()
+	defer qs.lock.Unlock()
+
+	return qs.dispatch()
+}
+
+func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
+	qs.lock.Lock()
+	defer qs.lock.Unlock()
+
+	return qs.enqueue(r)
+}
+
+func (qs *queueset) enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
+	trackers := r.LatencyTrackers()
+	trackers.TotalDuration.Start()
 
 	selected, err := qs.assigner.SelectQueue(qs, r.GetFlowID())
 	if err != nil {
@@ -146,10 +169,7 @@ func (qs *queueset) Enqueue(r fairqueuing.Request) (*queuedFinisher, error) {
 	return &queuedFinisher{request: r, postExecution: postExecution, postTimeout: postTimeout}, nil
 }
 
-func (qs *queueset) Dispatch() (bool, error) {
-	qs.lock.Lock()
-	defer qs.lock.Unlock()
-
+func (qs *queueset) dispatch() (bool, error) {
 	var minQueue fairqueue
 	var minIndex int
 	var minRequest fairqueuing.Request

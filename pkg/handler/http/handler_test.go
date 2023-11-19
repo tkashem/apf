@@ -1,14 +1,14 @@
-package test
+package http
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/tkashem/apf/factory"
 	"github.com/tkashem/apf/pkg/fairqueuing"
-	"github.com/tkashem/apf/pkg/fairqueuing/queueassigner"
 	"github.com/tkashem/apf/pkg/fairqueuing/queueselector"
 	"github.com/tkashem/apf/pkg/fairqueuing/queueset"
 	"k8s.io/utils/clock"
@@ -33,6 +33,14 @@ func TestSchedulerWithQueuing(t *testing.T) {
 		t.Fatalf("failed to create queueset")
 	}
 
+	converter := NewConverter(clock, func(r *http.Request) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(r.Context(), 3*time.Second)
+	}, func(*http.Request) (fairqueuing.FlowIDType, error) {
+		return 0, nil
+	}, func(*http.Request) (seats uint32, duration time.Duration, err error) {
+		return 1, time.Second, nil
+	})
+
 	var secondExecuted bool
 	firstInProgressCh, firstDoneCh, firstBlockedCh := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,22 +54,13 @@ func TestSchedulerWithQueuing(t *testing.T) {
 		}
 	})
 
-	handler, err := factory.NewBuilder().
-		WithRequestHandler(requestHandler).
-		WithUserProvidedCostEstimator(func(request *http.Request) (uint32, time.Duration) {
-			return 1, 1 * time.Second
-		}).
-		WithFlowDistinguisher(func(r *http.Request) []string {
-			return []string{r.URL.Path}
-		}).
-		WithServerConcurrency(1).
-		WithSchedulingEvents(events{t: t}).
-		WithQueuing(queueset.Config{NQueues: 16, QueueMaxLength: 128, QueueAssignerFactory: &queueassigner.RoundRobinQueueAssignerFactory{}}).
-		Build()
-	if err != nil {
-		t.Fatalf("failed to build apf handler: %v", err)
-	}
-
+	handler := NewAPFHandler(requestHandler, qs, &Config{
+		Exempt:       NewNoExemption(),
+		ErrorHandler: NewDefaultErrorHandler(),
+		Events:       NewDefaultEvents(),
+		Clock:        clock,
+		Converter:    converter,
+	})
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
@@ -138,4 +137,16 @@ func (e queuingEvents) Disposed(r fairqueuing.Request) {
 }
 func (e queuingEvents) Timeout(r fairqueuing.Request) {
 	e.t.Logf("timeout: %q", r)
+}
+
+func check(resp *http.Response, err error, want int) error {
+	switch {
+	case err != nil:
+		return fmt.Errorf("expected no error, but got: %v", err)
+	default:
+		if resp.StatusCode != want {
+			return fmt.Errorf("expected status code: %d, but got: %v", want, resp)
+		}
+	}
+	return nil
 }

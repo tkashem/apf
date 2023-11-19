@@ -21,6 +21,7 @@ type Request interface {
 	FlowCalculator
 
 	Context() context.Context
+	CancelFunc() context.CancelFunc
 	String() string
 	LatencyTrackers() LatencyTrackers
 }
@@ -115,4 +116,5 @@ type FairQueueSet interface {
 	Name() string
 	Enqueue(Request) (Finisher, error)
 	Dispatch() (bool, error)
+	EnqueueAndDispatch(Request) (Finisher, error)
 }

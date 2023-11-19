@@ -16,5 +16,6 @@ type Config struct {
 
 type QueuingConfig struct {
 	NQueues        int
+	HandSize       int
 	QueueMaxLength int
 }

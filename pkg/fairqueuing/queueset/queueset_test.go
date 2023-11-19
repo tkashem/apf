@@ -65,6 +65,7 @@ func (r *request) GetFlowID() fairqueuing.FlowIDType {
 func (r *request) Context() context.Context {
 	return context.Background()
 }
+func (r *request) CancelFunc() context.CancelFunc { return nil }
 func (r *request) EstimateCost() (seats uint32, width virtual.SeatSeconds) {
 	return r.seats, virtual.SeatsTimesDuration(float64(r.seats), r.duration)
 }
