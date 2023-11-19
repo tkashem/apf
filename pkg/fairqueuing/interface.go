@@ -6,30 +6,18 @@ import (
 	"github.com/tkashem/apf/pkg/fairqueuing/virtual"
 )
 
-type CostEstimator interface {
-	EstimateCost() (seats uint32, width virtual.SeatSeconds)
-}
-
-type Hasher interface {
-	Hash() uint64
-}
+type FlowIDType uint64
 
 type Request interface {
-	CostEstimator
 	virtual.RTracker
 	DecisionWaiterSetter
-	FlowCalculator
 
+	GetFlowID() FlowIDType
+	EstimateCost() (seats uint32, width virtual.SeatSeconds)
 	Context() context.Context
 	CancelFunc() context.CancelFunc
 	String() string
 	LatencyTrackers() LatencyTrackers
-}
-
-type FlowIDType uint64
-
-type FlowCalculator interface {
-	GetFlowID() FlowIDType
 }
 
 type FairQueueAccessor interface {
@@ -44,7 +32,6 @@ type QueueSelector interface {
 type LatencyTracker interface {
 	Start()
 	Finish()
-	// GetDuration() (startedAt time.Time, duration time.Duration)
 }
 
 type LatencyTrackers struct {
